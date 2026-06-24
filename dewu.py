@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Извлечение фото товара по ссылке Dewu (得物) / dw4.co.
-Пробуем несколько способов подряд, чтобы быть устойчивее к защите.
+Возвращаем несколько ракурсов товара, отбрасывая служебные иконки.
 """
 import re
 import logging
@@ -25,15 +25,6 @@ HEADERS = {
 # Находим ссылку Dewu/dw4 внутри произвольного текста сообщения.
 DEWU_URL_RE = re.compile(r"https?://[^\s]*(?:dw4\.co|dewu\.com|poizon)[^\s]*", re.IGNORECASE)
 
-# Паттерны для поиска картинки в HTML/JSON ответа.
-OG_IMAGE_RE = re.compile(
-    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-    re.IGNORECASE,
-)
-OG_IMAGE_RE2 = re.compile(
-    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
-    re.IGNORECASE,
-)
 # Прямые ссылки на CDN-картинки Dewu/Poizon (jpg/png/webp).
 CDN_IMG_RE = re.compile(
     r'(https?:\\?/\\?/[^"\'\\\s]*(?:poizon|dewu|alicdn|deepoon)[^"\'\\\s]*\.(?:jpg|jpeg|png|webp)[^"\'\\\s]*)',
@@ -72,9 +63,15 @@ def _clean_url(url: str) -> str:
     return url.replace("\\/", "/").replace("\\u002F", "/").strip()
 
 
-async def get_dewu_image(url: str) -> str | None:
+def _base_key(url: str) -> str:
+    """Ключ для дедупликации: путь до '?' (одно фото в разных размерах = один товар)."""
+    return url.split("?", 1)[0]
+
+
+async def get_dewu_images(url: str, limit: int = 6) -> list[str]:
     """
-    По ссылке Dewu вернуть URL фото товара, либо None если не удалось.
+    По ссылке Dewu вернуть список URL фото товара (разные ракурсы), до limit штук.
+    Пустой список — если ничего не нашли.
     """
     try:
         timeout = aiohttp.ClientTimeout(total=15)
@@ -83,42 +80,34 @@ async def get_dewu_image(url: str) -> str | None:
                 final_url = str(resp.url)
                 logger.info(f"Dewu: запрос {url} -> {final_url} [{resp.status}]")
                 if resp.status != 200:
-                    return None
+                    return []
                 html = await resp.text(errors="ignore")
     except Exception as e:
         logger.error(f"Dewu: ошибка загрузки страницы: {e}")
-        return None
+        return []
 
-    # 1) og:image — самый надёжный, НО только если это не иконка.
-    for rx in (OG_IMAGE_RE, OG_IMAGE_RE2):
-        m = rx.search(html)
-        if m:
-            img = _clean_url(m.group(1))
-            logger.info(f"Dewu: нашёл og:image -> {img}")
-            if _is_product_image(img):
-                return img
-            logger.info("Dewu: og:image похож на иконку, ищу фото товара дальше")
-
-    # 2) Среди всех CDN-картинок выбрать настоящее фото товара (без иконок).
+    # Собираем все CDN-картинки в порядке появления.
     all_imgs = [_clean_url(u) for u in CDN_IMG_RE.findall(html)]
-    # Убираем дубли, сохраняя порядок.
-    seen = set()
-    unique = []
+
+    # Оставляем только фото товара, убираем дубли по базовому пути.
+    result = []
+    seen_keys = set()
     for u in all_imgs:
-        if u not in seen:
-            seen.add(u)
-            unique.append(u)
-    logger.info(f"Dewu: всего картинок найдено: {len(unique)}; первые: {unique[:5]}")
+        if not _is_product_image(u):
+            continue
+        key = _base_key(u)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        result.append(u)
+        if len(result) >= limit:
+            break
 
-    for u in unique:
-        if _is_product_image(u):
-            logger.info(f"Dewu: выбрал фото товара -> {u}")
-            return u
+    logger.info(f"Dewu: фото товара отобрано: {len(result)} (из {len(all_imgs)} всего)")
+    return result
 
-    # Если фото товара не нашли, но картинки есть — вернём первую (лучше что-то, чем ничего).
-    if unique:
-        logger.warning(f"Dewu: фото товара не распознано, беру первую -> {unique[0]}")
-        return unique[0]
 
-    logger.warning("Dewu: картинка не найдена в ответе страницы")
-    return None
+async def get_dewu_image(url: str) -> str | None:
+    """Совместимость: вернуть одно (первое) фото товара, либо None."""
+    imgs = await get_dewu_images(url, limit=1)
+    return imgs[0] if imgs else None
