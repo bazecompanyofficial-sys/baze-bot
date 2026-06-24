@@ -4,10 +4,10 @@ import logging
 import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
+from aiogram.types import Message, InputMediaPhoto
 from groq import Groq
 from system_prompt import SYSTEM_PROMPT
-from dewu import find_dewu_url, get_dewu_image
+from dewu import find_dewu_url, get_dewu_images
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,21 +73,30 @@ async def message_handler(message: Message):
     dewu_url = find_dewu_url(user_text)
     if dewu_url:
         await bot.send_chat_action(message.chat.id, "upload_photo")
-        image_url = await get_dewu_image(dewu_url)
-        if image_url:
+        images = await get_dewu_images(dewu_url, limit=6)
+        caption = "Вот фото товара с Dewu. Хотите узнать цену, размеры или оформить заказ?"
+        if images:
             try:
-                await message.answer_photo(
-                    photo=image_url,
-                    caption="Вот фото товара с Dewu. Хотите узнать цену, размеры или оформить заказ?",
-                )
+                if len(images) == 1:
+                    await message.answer_photo(photo=images[0], caption=caption)
+                else:
+                    media = [InputMediaPhoto(media=images[0], caption=caption)]
+                    media += [InputMediaPhoto(media=u) for u in images[1:]]
+                    await message.answer_media_group(media)
                 return
             except Exception as e:
                 logger.error(f"Не удалось отправить фото в Telegram: {e}")
-                await message.answer(
-                    "Я нашёл товар, но не смог загрузить фото. "
-                    "Опишите модель словами — подберу и проконсультирую."
-                )
-                return
+                # Запасной вариант — пробуем хотя бы одно фото.
+                try:
+                    await message.answer_photo(photo=images[0], caption=caption)
+                    return
+                except Exception as e2:
+                    logger.error(f"Не удалось отправить даже одно фото: {e2}")
+                    await message.answer(
+                        "Я нашёл товар, но не смог загрузить фото. "
+                        "Опишите модель словами — подберу и проконсультирую."
+                    )
+                    return
         else:
             await message.answer(
                 "Не получилось открыть эту ссылку Dewu автоматически. "
