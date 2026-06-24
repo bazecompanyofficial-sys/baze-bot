@@ -1,0 +1,19 @@
+name: baze-bot
+
+services:
+  - name: baze-bot
+    type: worker
+    git:
+      repository: github.com/bazecompanyofficial-sys/baze-bot
+      branch: main
+    build:
+      buildpack:
+        build_command: pip install -r requirements.txt
+        run_command: python bot.py
+    env:
+      - key: TELEGRAM_BOT_TOKEN
+        value: ""
+      - key: GROQ_API_KEY
+        value: ""
+    instance_types:
+      - type: free
